@@ -1,0 +1,153 @@
+/**
+ * Smoke test: evaluate the built client bundle in a mocked DOM and drive
+ * apply() through register → guard → dispose.
+ * Run: node scripts/smoke.mjs
+ */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import vm from "node:vm";
+
+const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const source = readFileSync(join(root, "lib/client.js"), "utf8");
+
+let registered = null;
+let setThemeCalls = [];
+const listeners = new Map();
+
+class MockClassList {
+	constructor() { this.set = new Set(); }
+	add(...names) { for (const n of names) this.set.add(n); }
+	remove(...names) { for (const n of names) this.set.delete(n); }
+}
+
+function makeElement() {
+	return {
+		id: "",
+		dataset: {},
+		textContent: "",
+		isConnected: false,
+		classList: new MockClassList(),
+		appendChild(child) { child.isConnected = true; },
+		append(child) { child.isConnected = true; },
+		remove() { this.isConnected = false; },
+		setAttribute(name, value) { this.attrs = this.attrs || {}; this.attrs[name] = value; },
+		getAttribute(name) { return (this.attrs || {})[name] ?? null; },
+		removeAttribute(name) { delete (this.attrs || {})[name]; },
+		addEventListener() {},
+		removeEventListener() {}
+	};
+}
+
+const documentMock = {
+	head: makeElement(),
+	body: makeElement(),
+	createElement: () => makeElement(),
+	getElementById: () => null
+};
+
+const storage = new Map();
+const localStorageMock = {
+	getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+	setItem: (k, v) => storage.set(k, String(v)),
+	removeItem: (k) => storage.delete(k)
+};
+
+let loadedModule = null;
+const windowMock = {
+	__ModuleLoader__: {
+		load({ factory }) {
+			const requireFn = () => ({});
+			loadedModule = factory(requireFn);
+		}
+	},
+	localStorage: localStorageMock,
+	console
+};
+
+const context = vm.createContext({
+	window: windowMock,
+	document: documentMock,
+	localStorage: localStorageMock
+});
+vm.runInContext(source, context, { filename: "lib/client.js" });
+
+if (loadedModule === null) throw new Error("module was never loaded");
+if (loadedModule.isPlugin !== true) throw new Error("isPlugin flag missing");
+if (!Array.isArray(loadedModule.inject) || !loadedModule.inject.includes("theme")) {
+	throw new Error("inject must include 'theme'");
+}
+if (typeof loadedModule.apply !== "function") throw new Error("apply missing");
+
+const effects = [];
+const themeService = {
+	register(def) {
+		registered = def;
+		let disposed = false;
+		return () => { disposed = true; };
+	},
+	setTheme(id) { setThemeCalls.push(id); }
+};
+const ctx = {
+	effect(fn, label) { effects.push(label); fn(); return () => {}; },
+	on(event, cb) {
+		if (!listeners.has(event)) listeners.set(event, []);
+		listeners.get(event).push(cb);
+		return () => listeners.delete(event);
+	},
+	get(service) { return service === "theme" ? themeService : undefined; },
+	theme: undefined // force the ctx.get path
+};
+
+loadedModule.apply(ctx);
+
+// Assertions -----------------------------------------------------------------
+if (registered === null) throw new Error("theme.register was not called");
+if (registered.id !== "deepseek-whalegirl") throw new Error(`bad id: ${registered.id}`);
+if (registered.colorScheme !== "light") throw new Error("colorScheme must be light");
+
+const tokenNames = Object.keys(registered.tokens);
+const required = [
+	"--dsw-static-neutral-bluish-1000",
+	"--dsw-static-neutral-bluish-50",
+	"--dsw-alias-bg-base",
+	"--dsw-alias-brand-primary",
+	"--dsw-alias-button-primary-fill",
+	"--dsw-alias-label-primary",
+	"--dsw-specific-sidebar-fill",
+	"--dsw-specific-bubble",
+	"--dsw-shadow-lv3",
+	"--dsw-linear-gradient-think"
+];
+for (const name of required) {
+	if (!(name in registered.tokens)) throw new Error(`missing token ${name}`);
+	if (registered.tokens[name] === "") throw new Error(`empty token ${name}`);
+}
+console.log(`tokens registered: ${tokenNames.length}`);
+
+const css = documentMock.head.children?.at?.(-1)?.textContent ?? "";
+const styleTag = [...(documentMock.head.childNodes ?? [])];
+void styleTag;
+if (!documentMock.body.attrs || documentMock.body.attrs["data-dsh-whalegirl"] !== "") {
+	throw new Error("body attribute not set");
+}
+if (setThemeCalls.at(-1) !== "deepseek-whalegirl") throw new Error("setTheme not pinned");
+if (!effects.includes("dsh-theme-whalegirl: register")) throw new Error("effect label missing");
+
+// Guard behavior: any foreign preference write re-asserts our theme…
+setThemeCalls = [];
+for (const cb of listeners.get("theme/change") ?? []) cb({ preference: "system" });
+if (setThemeCalls.at(-1) !== "deepseek-whalegirl") throw new Error("guard did not re-assert on system");
+setThemeCalls = [];
+for (const cb of listeners.get("theme/change") ?? []) cb({ preference: "dark" });
+if (setThemeCalls.at(-1) !== "deepseek-whalegirl") throw new Error("guard did not re-assert on explicit pick");
+
+// …and its own change event does not loop.
+setThemeCalls = [];
+for (const cb of listeners.get("theme/change") ?? []) cb({ preference: "deepseek-whalegirl" });
+if (setThemeCalls.length !== 0) throw new Error("guard must ignore its own theme");
+
+// Wallpaper data URI embedded?
+if (!source.includes("data:image/jpeg;base64,")) throw new Error("background data URI missing");
+
+console.log("smoke test passed ✓");
