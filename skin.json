@@ -1,0 +1,17 @@
+{
+  "id": "deepseek-whalegirl",
+  "name": "DeepSeek-鲸鱼娘",
+  "nameEn": "DeepSeek Whale Girl",
+  "author": "ZHOUcourier",
+  "tagline": "鲸鱼娘壁纸 × 玫瑰雾紫玻璃面板",
+  "description": "移植自 DreamSkin 皮肤包的 DeepSeek 鲸鱼娘主题：亮色玫瑰雾紫调色板完整重映射 --dsw-* 令牌阶梯，鲸鱼娘插画作为环境壁纸衬在磨砂玻璃界面之后，输入框聚焦泛咖啡色光晕。",
+  "tags": ["deepseek", "whale", "whalegirl", "dreamskin", "pastel", "light"],
+  "accent": "#455b78",
+  "bodyAttr": "data-dsh-whalegirl",
+  "package": "dsh-theme-whalegirl",
+  "wiring": {
+    "id": "dsh-theme-whalegirl",
+    "bundleWired": false
+  },
+  "order": 20
+}
