@@ -9,8 +9,9 @@ English | [中文](README.zh.md)
 ## What it does
 
 - **Full token remap** — registers one light theme (`deepseek-whalegirl`) into DSH's native theme runtime with a complete `--dsw-*` dictionary (174 tokens): every surface, label, border, button, markdown block, scrollbar and state color derives from the DreamSkin palette.
-- **Ambient wallpaper** — the whale-girl artwork sits as a fixed backdrop behind a frosted UI; surfaces keep small alpha so it glows through, the app frame gets a backdrop blur.
-- **DreamSkin safe-css intent** — frosted rounded sidebar, coffee-accent composer focus ring, sand selection color, soft violet-tinted shadows.
+- **Lightly frosted by default** — the whale-girl artwork sits as a fixed backdrop behind the UI, but since 0.2.0 the frosted glass is drastically toned down: app-frame blur drops from 18px to 4px and surfaces are far more opaque, keeping just a hint of the artwork.
+- **User-adjustable glass & wallpaper** — frame blur, surface/bubble translucency, wallpaper veil, wallpaper visibility & blur and the composer focus glow are adjustable live from the plugin's card on the settings page (stored per browser), with three presets: 清爽玻璃 / DreamSkin 原味 / 纯净实底.
+- **DreamSkin safe-css intent** — rounded sidebar, coffee-accent composer focus ring (toggleable), sand selection color, soft violet-tinted shadows.
 - **Native integration** — the theme pins itself through `theme.setTheme()`; if the built-in Appearance scope resets the preference to *system*, the plugin re-asserts it. An explicit light/dark pick you make in Appearance wins until the plugin is toggled off/on again.
 
 Palette anchors taken from the source skin:
@@ -54,6 +55,23 @@ dsh --profile web
 ```
 
 The theme applies immediately once the plugin mounts. To switch away, pick a preference in Settings → General → Appearance (the plugin steps aside); to come back, toggle the plugin off/on in the market Themes tab.
+
+## Customize
+
+Open **Settings → the plugins page** and find the **「鲸鱼娘 · 玻璃与壁纸」** card. Every change applies instantly; values are stored in this browser's localStorage (`dsh-whalegirl.prefs.v1`), not in the profile.
+
+| Control | Range | Default | Effect |
+| --- | --- | --- | --- |
+| Presets | — | 清爽玻璃 | One-click 清爽玻璃 / DreamSkin 原味 / 纯净实底 |
+| 主框背景模糊 | 0–24px | 4px | App-frame backdrop blur radius (the old port was hard-coded 18px) |
+| 表面透明度 | 0–100% | 45% | 0 = fully opaque surfaces, 100 = original translucent design |
+| 用户气泡透明度 | 0–100% | 60% | Translucency of the dusty-rose user bubbles |
+| 壁纸遮罩浓度 | 0–100% | 55% | Strength of the paper veil over the artwork |
+| 显示环境壁纸 | on/off | on | Hides artwork + veil for a plain paper background |
+| 壁纸模糊 | 0–16px | 0px | Softens the artwork itself |
+| 输入框咖啡色聚焦光晕 | on/off | on | The DreamSkin composer focus ring |
+
+**恢复默认** restores the defaults above. Upgrading from 0.1.x starts from the new (lighter) defaults; nothing is migrated.
 
 Uninstall:
 

@@ -27,8 +27,12 @@ function makeElement() {
 		dataset: {},
 		textContent: "",
 		isConnected: false,
+		childNodes: [],
 		classList: new MockClassList(),
-		appendChild(child) { child.isConnected = true; },
+		appendChild(child) {
+			child.isConnected = true;
+			this.childNodes.push(child);
+		},
 		append(child) { child.isConnected = true; },
 		remove() { this.isConnected = false; },
 		setAttribute(name, value) { this.attrs = this.attrs || {}; this.attrs[name] = value; },
@@ -125,7 +129,7 @@ for (const name of required) {
 }
 console.log(`tokens registered: ${tokenNames.length}`);
 
-const css = documentMock.head.children?.at?.(-1)?.textContent ?? "";
+const css = documentMock.head.childNodes?.at?.(-1)?.textContent ?? "";
 const styleTag = [...(documentMock.head.childNodes ?? [])];
 void styleTag;
 if (!documentMock.body.attrs || documentMock.body.attrs["data-dsh-whalegirl"] !== "") {
@@ -149,5 +153,16 @@ if (setThemeCalls.length !== 0) throw new Error("guard must ignore its own theme
 
 // Wallpaper data URI embedded?
 if (!source.includes("data:image/jpeg;base64,")) throw new Error("background data URI missing");
+
+// Reduced-frost defaults + adjustable surfaces live in the emitted stylesheet.
+const skinCss = css;
+if (!skinCss.includes("backdrop-filter: blur(4px)")) throw new Error("default frame blur should be 4px");
+if (/blur\(18px\)/.test(skinCss)) throw new Error("legacy 18px blur must be gone by default");
+if (!skinCss.includes("--dsw-alias-bg-base: ") || !skinCss.includes("!important")) {
+	throw new Error("adjustable surface overrides missing");
+}
+
+// Appearance settings card is wired to the plugin settings slot.
+if (!source.includes('"settings.plugin.item"')) throw new Error("settings card slot missing");
 
 console.log("smoke test passed ✓");

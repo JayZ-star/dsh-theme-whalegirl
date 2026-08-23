@@ -10,12 +10,20 @@
  *    accentAlt #ceb683, secondary #85c1cc, panel #abb4cf/#c3cee4, background
  *    #bd9999). The runtime presenter applies the tokens as body inline
  *    variables, so every alias/specific token in the UI follows the palette.
- *  - Layers the whale-girl artwork as an ambient fixed wallpaper behind a
- *    frosted UI: surfaces keep small alpha so the art shows through, and the
- *    app frame gets a backdrop blur. Gated on the body attribute
- *    `data-dsh-whalegirl` so nothing leaks when the plugin is off.
- *  - Ports the intent of the DreamSkin `theme.css` safe-css: frosted sidebar,
- *    coffee-accent composer focus ring, plus soft selection/scrollbar polish.
+ *  - Layers the whale-girl artwork as an ambient fixed wallpaper behind the
+ *    UI. Since 0.2.0 the frosted-glass strength is drastically reduced by
+ *    default (frame blur 18px → 4px, far more opaque surfaces) and every
+ *    frost-related parameter is user-adjustable at runtime: frame blur,
+ *    surface/bubble translucency, wallpaper veil, wallpaper visibility and
+ *    blur, composer focus glow — plus three presets (清爽玻璃 / DreamSkin
+ *    原味 / 纯净实底). Adjustments are made from the plugin's card on the
+ *    settings page (settings.plugin.item slot) and persisted per browser in
+ *    localStorage; they apply instantly by rewriting this plugin's style tag.
+ *  - Adjustable surface colors are re-emitted as !important custom-property
+ *    overrides on the body attribute, which beat the presenter's inline
+ *    tokens without re-registering the theme.
+ *  - Gated on the body attribute `data-dsh-whalegirl` so nothing leaks when
+ *    the plugin is off.
  *
  * Selection semantics follow the skin model: activating the plugin pins the
  * theme via theme.setTheme(), and a `theme/change` guard re-asserts it
@@ -34,6 +42,90 @@ const STYLE_TAG_ID = "dsh-whalegirl-skin";
  * source (npm tarball, GitHub release, git) without asset-serving support.
  */
 const BACKGROUND_DATA_URI = "__WHALEGIRL_BACKGROUND_DATA_URI__";
+
+/* ------------------------------------------------------------------ *
+ * User-adjustable appearance preferences (per browser, localStorage)
+ * ------------------------------------------------------------------ */
+
+const PREFS_KEY = "dsh-whalegirl.prefs.v1";
+
+/**
+ * Defaults ARE the new look: much less frost than the original port.
+ *  - frameBlur: app-frame backdrop blur radius in px (was hard-coded 18).
+ *  - surfaceOpacity: 0 = fully opaque surfaces … 100 = original translucent
+ *    design values. Default 45 keeps just a hint of the wallpaper.
+ *  - bubbleOpacity: same scale for the dusty-rose user bubbles.
+ *  - veilStrength: paper veil over the wallpaper (0–100% of the original).
+ *  - wallpaperOn / wallpaperBlur: show-hide and blur the artwork itself.
+ *  - focusGlow: coffee-accent composer focus ring on/off.
+ */
+const DEFAULT_PREFS = Object.freeze({
+	frameBlur: 4,
+	surfaceOpacity: 45,
+	bubbleOpacity: 60,
+	veilStrength: 55,
+	wallpaperOn: true,
+	wallpaperBlur: 0,
+	focusGlow: true
+});
+
+function clamp01(n) {
+	return Math.max(0, Math.min(1, n));
+}
+
+function normalizePrefs(raw) {
+	const p = raw !== null && typeof raw === "object" ? raw : {};
+	const num = (v, min, max, fallback) => {
+		const n = typeof v === "number" ? v : Number(v);
+		return Number.isFinite(n)
+			? Math.max(min, Math.min(max, Math.round(n)))
+			: fallback;
+	};
+	return {
+		frameBlur: num(p.frameBlur, 0, 24, DEFAULT_PREFS.frameBlur),
+		surfaceOpacity: num(p.surfaceOpacity, 0, 100, DEFAULT_PREFS.surfaceOpacity),
+		bubbleOpacity: num(p.bubbleOpacity, 0, 100, DEFAULT_PREFS.bubbleOpacity),
+		veilStrength: num(p.veilStrength, 0, 100, DEFAULT_PREFS.veilStrength),
+		wallpaperOn: p.wallpaperOn === false ? false : true,
+		wallpaperBlur: num(p.wallpaperBlur, 0, 16, DEFAULT_PREFS.wallpaperBlur),
+		focusGlow: p.focusGlow === false ? false : true
+	};
+}
+
+function loadPrefs() {
+	try {
+		const raw = localStorage.getItem(PREFS_KEY);
+		return normalizePrefs(raw === null ? null : JSON.parse(raw));
+	} catch {
+		return { ...DEFAULT_PREFS };
+	}
+}
+
+function savePrefs(prefs) {
+	try {
+		localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+	} catch {
+		/* storage unavailable — adjustments stay session-only */
+	}
+}
+
+/** Live-applier installed by apply(); the settings card pushes through here. */
+let applyPrefsHook = null;
+
+function pushPrefs(patch) {
+	const next = normalizePrefs({ ...loadPrefs(), ...patch });
+	savePrefs(next);
+	if (applyPrefsHook !== null) applyPrefsHook(next);
+	return next;
+}
+
+/**
+ * Effective alpha for a design-time translucent surface under opacity t:
+ * t=1 → the original design alpha, t=0 → fully opaque.
+ */
+function surfaceAlpha(designAlpha, t) {
+	return 1 - (1 - clamp01(designAlpha)) * clamp01(t);
+}
 
 /* ------------------------------------------------------------------ *
  * Color helpers (no dependencies — runs inside the ModuleLoader bundle)
@@ -241,20 +333,29 @@ function buildTokens() {
 	const redSteps = [["50", 0.05], ["100", 0.1], ["400", 0.44], ["500", 0.58], ["600", 0.68], ["900", 0.95]];
 	for (const [step, pos] of redSteps) t[`--dsw-static-red-${step}`] = sampleRamp(RED_STOPS, pos);
 
-	/* Aliases — translucent surfaces let the ambient wallpaper glow through. */
-	const bgBase = alpha(PAPER, 0.8);
-	const layer1 = alpha(mix(PAPER, "#ffffff", 0.35), 0.86);
-	const layer2 = alpha(mix(PAPER, "#ffffff", 0.5), 0.91);
-	const layer3 = alpha(mix(PAPER, "#ffffff", 0.62), 0.95);
-	const overlay = alpha(mix(PAPER, "#ffffff", 0.72), 0.96);
+	/*
+	 * Aliases. Registered with the DEFAULT (much-less-frosted) alphas; when
+	 * the user adjusts transparency these same keys are re-emitted live as
+	 * !important body-level overrides by buildSkinCss() below.
+	 */
+	const st = DEFAULT_PREFS.surfaceOpacity / 100;
+	const bt = DEFAULT_PREFS.bubbleOpacity / 100;
+	const sa = (designAlpha) => surfaceAlpha(designAlpha, st);
+	const sb = (designAlpha) => surfaceAlpha(designAlpha, bt);
+
+	const bgBase = alpha(PAPER, sa(0.8));
+	const layer1 = alpha(mix(PAPER, "#ffffff", 0.35), sa(0.86));
+	const layer2 = alpha(mix(PAPER, "#ffffff", 0.5), sa(0.91));
+	const layer3 = alpha(mix(PAPER, "#ffffff", 0.62), sa(0.95));
+	const overlay = alpha(mix(PAPER, "#ffffff", 0.72), sa(0.96));
 
 	t["--dsw-alias-bg-base"] = bgBase;
 	t["--dsw-alias-bg-layer-1"] = layer1;
 	t["--dsw-alias-bg-layer-2"] = layer2;
 	t["--dsw-alias-bg-layer-3"] = layer3;
 	t["--dsw-alias-bg-overlay"] = overlay;
-	t["--dsw-alias-bg-module-platform"] = alpha(mix(PANEL, "#ffffff", 0.45), 0.82);
-	t["--dsw-alias-bg-multi-select"] = alpha(mix(PANEL, "#ffffff", 0.5), 0.85);
+	t["--dsw-alias-bg-module-platform"] = alpha(mix(PANEL, "#ffffff", 0.45), sa(0.82));
+	t["--dsw-alias-bg-multi-select"] = alpha(mix(PANEL, "#ffffff", 0.5), sa(0.85));
 	t["--dsw-alias-bg-skeleton"] = alpha(INK, 0.06);
 	t["--dsw-alias-bg-mask-1"] = alpha(INK, 0.42);
 	t["--dsw-alias-bg-mask-2"] = alpha(INK, 0.24);
@@ -279,12 +380,12 @@ function buildTokens() {
 	t["--dsw-alias-button-primary-hover"] = mix(HIGHLIGHT, "#ffffff", 0.14);
 	t["--dsw-alias-button-primary-dimmed"] = alpha(HIGHLIGHT, 0.14);
 	t["--dsw-alias-button-contrast-fill"] = mix(INK, HIGHLIGHT, 0.5);
-	t["--dsw-alias-button-elevated-fill"] = alpha(mix("#ffffff", PAPER, 0.5), 0.94);
-	t["--dsw-alias-button-floating-fill"] = alpha(mix("#ffffff", PAPER, 0.35), 0.94);
-	t["--dsw-alias-button-floating-hover"] = alpha(mix("#ffffff", PAPER, 0.2), 0.97);
+	t["--dsw-alias-button-elevated-fill"] = alpha(mix("#ffffff", PAPER, 0.5), sa(0.94));
+	t["--dsw-alias-button-floating-fill"] = alpha(mix("#ffffff", PAPER, 0.35), sa(0.94));
+	t["--dsw-alias-button-floating-hover"] = alpha(mix("#ffffff", PAPER, 0.2), sa(0.97));
 	t["--dsw-alias-button-ghost-active-border"] = alpha(PANEL, 1);
-	t["--dsw-alias-button-ghost-active-fill"] = alpha(mix(PANEL, "#ffffff", 0.55), 0.6);
-	t["--dsw-alias-button-ghost-active-hover"] = alpha(mix(PANEL, "#ffffff", 0.4), 0.7);
+	t["--dsw-alias-button-ghost-active-fill"] = alpha(mix(PANEL, "#ffffff", 0.55), sa(0.6));
+	t["--dsw-alias-button-ghost-active-hover"] = alpha(mix(PANEL, "#ffffff", 0.4), sa(0.7));
 	t["--dsw-alias-button-info-fill"] = t["--dsw-static-blue-500"];
 	t["--dsw-alias-button-info-hover"] = t["--dsw-static-blue-400"];
 	t["--dsw-alias-button-tool-bar-fill"] = alpha(mix(PANEL, "#545557", 0.35), 0.55);
@@ -294,7 +395,7 @@ function buildTokens() {
 	t["--dsw-alias-interactive-bg-hover"] = alpha(HIGHLIGHT, 0.07);
 	t["--dsw-alias-interactive-bg-hover-accent"] = alpha(ACCENT, 0.13);
 	t["--dsw-alias-interactive-bg-hover-danger"] = alpha(t["--dsw-static-red-400"], 0.12);
-	t["--dsw-alias-interactive-bg-hover-solid"] = alpha(mix(PANEL, "#ffffff", 0.35), 0.9);
+	t["--dsw-alias-interactive-bg-hover-solid"] = alpha(mix(PANEL, "#ffffff", 0.35), sa(0.9));
 	t["--dsw-alias-interactive-bg-active"] = alpha(HIGHLIGHT, 0.13);
 
 	t["--dsw-alias-label-primary"] = INK;
@@ -308,10 +409,10 @@ function buildTokens() {
 	t["--dsw-alias-label-dimmed"] = t["--dsw-static-neutral-bluish-300"];
 
 	t["--dsw-alias-markdown-citation"] = alpha(PANEL, 0.35);
-	t["--dsw-alias-markdown-code-block"] = alpha(mix(PANEL_ALT, "#ffffff", 0.55), 0.9);
-	t["--dsw-alias-markdown-code-block-banner"] = alpha(mix(PANEL_ALT, "#ffffff", 0.4), 0.92);
+	t["--dsw-alias-markdown-code-block"] = alpha(mix(PANEL_ALT, "#ffffff", 0.55), sa(0.9));
+	t["--dsw-alias-markdown-code-block-banner"] = alpha(mix(PANEL_ALT, "#ffffff", 0.4), sa(0.92));
 	t["--dsw-alias-markdown-code-segment-selected"] = alpha("#ffffff", 0.85);
-	t["--dsw-alias-markdown-code-segment-unselected"] = alpha(mix(PANEL_ALT, "#ffffff", 0.3), 0.75);
+	t["--dsw-alias-markdown-code-segment-unselected"] = alpha(mix(PANEL_ALT, "#ffffff", 0.3), sa(0.75));
 	t["--dsw-alias-markdown-inline-code"] = alpha(TEAL, 0.2);
 	t["--dsw-alias-markdown-placeholder"] = t["--dsw-static-neutral-bluish-300"];
 	t["--dsw-alias-markdown-tag"] = alpha(SAND, 0.4);
@@ -337,17 +438,17 @@ function buildTokens() {
 	t["--dsw-alias-tooltip-bg"] = alpha(t["--dsw-static-neutral-bluish-800"], 0.96);
 
 	/* Specifics — the signature Whale Girl touches. */
-	t["--dsw-specific-sidebar-fill"] = alpha(PANEL, 0.34); // periwinkle glass over wallpaper
-	t["--dsw-specific-sidebar-nav-item-active"] = alpha(mix("#ffffff", PANEL, 0.25), 0.66);
+	t["--dsw-specific-sidebar-fill"] = alpha(PANEL, sa(0.34)); // periwinkle glass over wallpaper
+	t["--dsw-specific-sidebar-nav-item-active"] = alpha(mix("#ffffff", PANEL, 0.25), sa(0.66));
 	t["--dsw-specific-sidebar-nav-item-active-accent"] = SAND;
-	t["--dsw-specific-sidebar-nav-item-hover"] = alpha(mix("#ffffff", PANEL, 0.15), 0.5);
-	t["--dsw-specific-bubble"] = alpha(ROSE, 0.34); // dusty-rose user bubbles
-	t["--dsw-specific-bubble-highlight"] = alpha(mix(ROSE, SAND, 0.35), 0.45);
-	t["--dsw-specific-input-major"] = alpha(mix("#ffffff", PAPER, 0.3), 0.78);
-	t["--dsw-specific-login-input"] = alpha(mix("#ffffff", PAPER, 0.5), 0.9);
-	t["--dsw-specific-menu"] = alpha(mix("#ffffff", PANEL_ALT, 0.35), 0.97);
-	t["--dsw-specific-selector"] = alpha(mix("#ffffff", PANEL_ALT, 0.45), 0.94);
-	t["--dsw-specific-tip"] = alpha(mix("#ffffff", PANEL_ALT, 0.4), 0.92);
+	t["--dsw-specific-sidebar-nav-item-hover"] = alpha(mix("#ffffff", PANEL, 0.15), sa(0.5));
+	t["--dsw-specific-bubble"] = alpha(ROSE, sb(0.34)); // dusty-rose user bubbles
+	t["--dsw-specific-bubble-highlight"] = alpha(mix(ROSE, SAND, 0.35), sb(0.45));
+	t["--dsw-specific-input-major"] = alpha(mix("#ffffff", PAPER, 0.3), sa(0.78));
+	t["--dsw-specific-login-input"] = alpha(mix("#ffffff", PAPER, 0.5), sa(0.9));
+	t["--dsw-specific-menu"] = alpha(mix("#ffffff", PANEL_ALT, 0.35), sa(0.97));
+	t["--dsw-specific-selector"] = alpha(mix("#ffffff", PANEL_ALT, 0.45), sa(0.94));
+	t["--dsw-specific-tip"] = alpha(mix("#ffffff", PANEL_ALT, 0.4), sa(0.92));
 
 	/* Shadows & gradients, violet-keyed instead of pure black. */
 	t["--dsw-shadow-lv1"] = `0 2px 4px 0 ${alpha(INK, 0.06)}`;
@@ -364,25 +465,67 @@ function buildTokens() {
 const TOKENS = buildTokens();
 
 /* ------------------------------------------------------------------ *
- * Skin stylesheet — everything gated on the body attribute
+ * Skin stylesheet — generated from current prefs; everything gated on
+ * the body attribute. Surface overrides use !important so they beat the
+ * theme presenter's inline body variables without re-registering.
  * ------------------------------------------------------------------ */
 
-const SKIN_CSS = `
+function buildSkinCss(prefs) {
+	const st = prefs.surfaceOpacity / 100;
+	const bt = prefs.bubbleOpacity / 100;
+	const vs = prefs.veilStrength / 100;
+	const sa = (designAlpha) => surfaceAlpha(designAlpha, st);
+	const sb = (designAlpha) => surfaceAlpha(designAlpha, bt);
+	const wallBlur = prefs.wallpaperBlur;
+	const wallInset = wallBlur > 0 ? `${-(wallBlur * 2)}px` : "0";
+
+	const parts = [];
+
+	parts.push(`
 body[${BODY_ATTR}] {
   background-color: ${PAPER};
-}
-body[${BODY_ATTR}]::before {
+  /* Live-adjustable surfaces — !important beats the presenter's inline vars. */
+  --dsw-alias-bg-base: ${alpha(PAPER, sa(0.8))} !important;
+  --dsw-alias-bg-layer-1: ${alpha(mix(PAPER, "#ffffff", 0.35), sa(0.86))} !important;
+  --dsw-alias-bg-layer-2: ${alpha(mix(PAPER, "#ffffff", 0.5), sa(0.91))} !important;
+  --dsw-alias-bg-layer-3: ${alpha(mix(PAPER, "#ffffff", 0.62), sa(0.95))} !important;
+  --dsw-alias-bg-overlay: ${alpha(mix(PAPER, "#ffffff", 0.72), sa(0.96))} !important;
+  --dsw-alias-bg-module-platform: ${alpha(mix(PANEL, "#ffffff", 0.45), sa(0.82))} !important;
+  --dsw-alias-bg-multi-select: ${alpha(mix(PANEL, "#ffffff", 0.5), sa(0.85))} !important;
+  --dsw-alias-button-elevated-fill: ${alpha(mix("#ffffff", PAPER, 0.5), sa(0.94))} !important;
+  --dsw-alias-button-floating-fill: ${alpha(mix("#ffffff", PAPER, 0.35), sa(0.94))} !important;
+  --dsw-alias-button-floating-hover: ${alpha(mix("#ffffff", PAPER, 0.2), sa(0.97))} !important;
+  --dsw-alias-button-ghost-active-fill: ${alpha(mix(PANEL, "#ffffff", 0.55), sa(0.6))} !important;
+  --dsw-alias-button-ghost-active-hover: ${alpha(mix(PANEL, "#ffffff", 0.4), sa(0.7))} !important;
+  --dsw-alias-interactive-bg-hover-solid: ${alpha(mix(PANEL, "#ffffff", 0.35), sa(0.9))} !important;
+  --dsw-alias-markdown-code-block: ${alpha(mix(PANEL_ALT, "#ffffff", 0.55), sa(0.9))} !important;
+  --dsw-alias-markdown-code-block-banner: ${alpha(mix(PANEL_ALT, "#ffffff", 0.4), sa(0.92))} !important;
+  --dsw-alias-markdown-code-segment-unselected: ${alpha(mix(PANEL_ALT, "#ffffff", 0.3), sa(0.75))} !important;
+  --dsw-specific-sidebar-fill: ${alpha(PANEL, sa(0.34))} !important;
+  --dsw-specific-sidebar-nav-item-active: ${alpha(mix("#ffffff", PANEL, 0.25), sa(0.66))} !important;
+  --dsw-specific-sidebar-nav-item-hover: ${alpha(mix("#ffffff", PANEL, 0.15), sa(0.5))} !important;
+  --dsw-specific-input-major: ${alpha(mix("#ffffff", PAPER, 0.3), sa(0.78))} !important;
+  --dsw-specific-login-input: ${alpha(mix("#ffffff", PAPER, 0.5), sa(0.9))} !important;
+  --dsw-specific-menu: ${alpha(mix("#ffffff", PANEL_ALT, 0.35), sa(0.97))} !important;
+  --dsw-specific-selector: ${alpha(mix("#ffffff", PANEL_ALT, 0.45), sa(0.94))} !important;
+  --dsw-specific-tip: ${alpha(mix("#ffffff", PANEL_ALT, 0.4), sa(0.92))} !important;
+  --dsw-specific-bubble: ${alpha(ROSE, sb(0.34))} !important;
+  --dsw-specific-bubble-highlight: ${alpha(mix(ROSE, SAND, 0.35), sb(0.45))} !important;
+}`);
+
+	if (prefs.wallpaperOn) {
+		parts.push(`body[${BODY_ATTR}]::before {
   content: "";
   position: fixed;
-  inset: 0;
+  inset: ${wallInset};
   z-index: -1;
   pointer-events: none;
   background-image: url("${BACKGROUND_DATA_URI}");
   background-size: cover;
   background-position: 50% 50%;
-  background-repeat: no-repeat;
-}
-/* Soft paper veil so text keeps contrast over busy areas of the artwork. */
+  background-repeat: no-repeat;${wallBlur > 0 ? `\n  filter: blur(${wallBlur}px);` : ""}
+}`);
+		parts.push(`/* Soft paper veil so text keeps contrast over busy areas of the artwork. */
 body[${BODY_ATTR}]::after {
   content: "";
   position: fixed;
@@ -390,18 +533,33 @@ body[${BODY_ATTR}]::after {
   z-index: -1;
   pointer-events: none;
   background:
-    linear-gradient(180deg, ${alpha(PAPER, 0.34)} 0%, ${alpha(PAPER, 0.1)} 45%, ${alpha(PAPER, 0.22)} 100%);
-}
-body[${BODY_ATTR}] [id="root"] {
+    linear-gradient(180deg, ${alpha(PAPER, 0.34 * vs)} 0%, ${alpha(PAPER, 0.1 * vs)} 45%, ${alpha(PAPER, 0.22 * vs)} 100%);
+}`);
+	} else {
+		parts.push(`body[${BODY_ATTR}]::before,
+body[${BODY_ATTR}]::after { display: none; }`);
+	}
+
+	parts.push(`body[${BODY_ATTR}] [id="root"] {
   background: transparent;
-}
-/* The three-column app frame carries a CSS-module class ending in _frame. */
+}`);
+
+	if (prefs.frameBlur > 0) {
+		parts.push(`/* The three-column app frame carries a CSS-module class ending in _frame. */
 body[${BODY_ATTR}] [class$="_frame"] {
   background-color: transparent;
-  backdrop-filter: blur(18px) saturate(1.05);
-  -webkit-backdrop-filter: blur(18px) saturate(1.05);
-}
-/* Frosted sidebar surface (intent of the DreamSkin safe-css block). */
+  backdrop-filter: blur(${prefs.frameBlur}px) saturate(1.05);
+  -webkit-backdrop-filter: blur(${prefs.frameBlur}px) saturate(1.05);
+}`);
+	} else {
+		parts.push(`body[${BODY_ATTR}] [class$="_frame"] {
+  background-color: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}`);
+	}
+
+	parts.push(`/* Frosted sidebar surface (intent of the DreamSkin safe-css block). */
 body[${BODY_ATTR}] [role="tree"] {
   border-radius: 14px;
 }
@@ -411,35 +569,207 @@ body[${BODY_ATTR}] [role="treeitem"] {
 }
 body[${BODY_ATTR}] [role="treeitem"][aria-selected="true"] {
   box-shadow: inset 3px 0 0 var(--dsw-specific-sidebar-nav-item-active-accent);
-}
-/* Coffee-accent composer focus ring (DreamSkin composer:focus-visible). */
+}`);
+
+	if (prefs.focusGlow) {
+		parts.push(`/* Coffee-accent composer focus ring (DreamSkin composer:focus-visible). */
 body[${BODY_ATTR}] :is(textarea, [contenteditable="true"], input:not([type])):focus-visible {
   border-color: ${ACCENT};
   outline: none;
   box-shadow: 0 0 0 3px ${alpha(ACCENT, 0.18)};
-}
-body[${BODY_ATTR}] ::selection {
+}`);
+	}
+
+	parts.push(`body[${BODY_ATTR}] ::selection {
   background: ${alpha(SAND, 0.55)};
   color: ${INK};
 }
 @media print {
   body[${BODY_ATTR}]::before,
   body[${BODY_ATTR}]::after { display: none; }
+}`);
+
+	return parts.join("\n");
 }
-`;
+
+/* ------------------------------------------------------------------ *
+ * Appearance settings card — the plugin's own row on the settings page
+ * ("settings.plugin.item" slot), following the maid-whale/market model:
+ * hand-built React via dynamic import, all failures stay local so the
+ * theme works even if react or slots are unavailable.
+ * ------------------------------------------------------------------ */
+
+const CARD_SLOT = "settings.plugin.item";
+const CARD_KEY = "whalegirl-appearance";
+
+const CARD_PRESETS = [
+	["清爽玻璃（默认）", DEFAULT_PREFS],
+	["DreamSkin 原味", { frameBlur: 18, surfaceOpacity: 100, bubbleOpacity: 100, veilStrength: 100, wallpaperOn: true, wallpaperBlur: 0, focusGlow: true }],
+	["纯净实底", { frameBlur: 0, surfaceOpacity: 0, bubbleOpacity: 30, veilStrength: 40, wallpaperOn: true, wallpaperBlur: 0, focusGlow: true }]
+];
+
+function createAppearanceCardModule(React) {
+	const h = React.createElement;
+
+	const cardStyle = {
+		listStyle: "none",
+		border: "1px solid var(--border-color, #d8d8d8)",
+		borderRadius: 12,
+		padding: 16,
+		background: "var(--surface-color, transparent)",
+		display: "grid",
+		gap: 14
+	};
+	const rowStyle = {
+		display: "flex",
+		justifyContent: "space-between",
+		alignItems: "center",
+		gap: 20
+	};
+	const rangeStyle = { width: 180 };
+
+	function Field({ label, hint, children }) {
+		return h("label", { style: rowStyle },
+			h("span", null,
+				h("span", { style: { display: "block", fontWeight: 600 } }, label),
+				h("small", { style: { display: "block", opacity: 0.65, marginTop: 3 } }, hint)),
+			children);
+	}
+
+	function AppearanceCard() {
+		const prefsRef = React.useRef(loadPrefs());
+		const [prefs, setPrefs] = React.useState(prefsRef.current);
+
+		const update = (patch) => {
+			prefsRef.current = pushPrefs({ ...prefsRef.current, ...patch });
+			setPrefs(prefsRef.current);
+		};
+
+		return h("li", { style: cardStyle, "data-testid": "whalegirl-appearance-settings" },
+			h("div", null,
+				h("strong", { style: { fontSize: 16 } }, "鲸鱼娘 · 玻璃与壁纸"),
+				h("p", { style: { margin: "5px 0 0", opacity: 0.72 } },
+					"磨砂强度、表面透明度与壁纸即时生效，仅保存在当前浏览器。")),
+			h(Field, {
+				label: "预设",
+				hint: "一键切换整体风格。"
+			}, h("span", { style: { display: "flex", gap: 8 } },
+				CARD_PRESETS.map(([name, values]) =>
+					h("button", {
+						key: name,
+						type: "button",
+						style: { cursor: "pointer", borderRadius: 8, padding: "5px 10px" },
+						onClick: () => update(values)
+					}, name)))),
+			h(Field, {
+				label: "主框背景模糊",
+				hint: `应用主框毛玻璃的模糊半径，当前 ${prefs.frameBlur}px；0 为关闭。`
+			}, h("input", {
+				type: "range", min: 0, max: 24, step: 1, style: rangeStyle,
+				value: prefs.frameBlur,
+				onChange: (event) => update({ frameBlur: Number(event.target.value) })
+			})),
+			h(Field, {
+				label: "表面透明度",
+				hint: `数值越低表面越实、壁纸越难透出，当前 ${prefs.surfaceOpacity}%。`
+			}, h("input", {
+				type: "range", min: 0, max: 100, step: 5, style: rangeStyle,
+				value: prefs.surfaceOpacity,
+				onChange: (event) => update({ surfaceOpacity: Number(event.target.value) })
+			})),
+			h(Field, {
+				label: "用户气泡透明度",
+				hint: `玫瑰色气泡的透出程度，当前 ${prefs.bubbleOpacity}%。`
+			}, h("input", {
+				type: "range", min: 0, max: 100, step: 5, style: rangeStyle,
+				value: prefs.bubbleOpacity,
+				onChange: (event) => update({ bubbleOpacity: Number(event.target.value) })
+			})),
+			h(Field, {
+				label: "壁纸遮罩浓度",
+				hint: `壁纸上方的纸色薄纱强度，当前 ${prefs.veilStrength}%；0 为无遮罩。`
+			}, h("input", {
+				type: "range", min: 0, max: 100, step: 5, style: rangeStyle,
+				value: prefs.veilStrength,
+				onChange: (event) => update({ veilStrength: Number(event.target.value) })
+			})),
+			h(Field, {
+				label: "显示环境壁纸",
+				hint: "关闭后回到纯净纸色背景。"
+			}, h("input", {
+				type: "checkbox",
+				checked: prefs.wallpaperOn,
+				onChange: (event) => update({ wallpaperOn: event.target.checked })
+			})),
+			prefs.wallpaperOn ? h(Field, {
+				label: "壁纸模糊",
+				hint: `柔化插画细节，当前 ${prefs.wallpaperBlur}px。`
+			}, h("input", {
+				type: "range", min: 0, max: 16, step: 1, style: rangeStyle,
+				value: prefs.wallpaperBlur,
+				onChange: (event) => update({ wallpaperBlur: Number(event.target.value) })
+			})) : null,
+			h(Field, {
+				label: "输入框咖啡色聚焦光晕",
+				hint: "DreamSkin 原版的输入框聚焦描边与光圈。"
+			}, h("input", {
+				type: "checkbox",
+				checked: prefs.focusGlow,
+				onChange: (event) => update({ focusGlow: event.target.checked })
+			})),
+			h("div", { style: { ...rowStyle, justifyContent: "flex-end" } },
+				h("button", {
+					type: "button",
+					style: { cursor: "pointer", borderRadius: 8, padding: "5px 10px" },
+					onClick: () => update(DEFAULT_PREFS)
+				}, "恢复默认")));
+	}
+
+	return { AppearanceCard };
+}
+
+function registerAppearanceCard(ctx) {
+	if (ctx === null || typeof ctx !== "object") return;
+	const slots = ctx.slots;
+	if (slots === null || typeof slots !== "object" ||
+		typeof slots.inject !== "function" || typeof slots.register !== "function") {
+		return;
+	}
+	let reactPromise;
+	try {
+		reactPromise = Promise.resolve(import("react"));
+	} catch {
+		return; // no dynamic import in this runtime — theme still applies
+	}
+	reactPromise
+		.then((React) => {
+			const { AppearanceCard } = createAppearanceCardModule(React);
+			slots.inject(CARD_SLOT, () => slots.register({
+				name: CARD_SLOT,
+				key: CARD_KEY,
+				id: CARD_KEY,
+				order: 30,
+				inject: () => ({})
+			}, AppearanceCard));
+		})
+		.catch(() => {
+			/* react unavailable — card skipped, theme unaffected */
+		});
+}
 
 /* ------------------------------------------------------------------ *
  * Skin stylesheet injection
  * ------------------------------------------------------------------ */
 
-function injectStyle() {
+function injectStyle(cssText) {
 	let tag = document.getElementById(STYLE_TAG_ID);
-	if (tag !== null) return tag;
-	tag = document.createElement("style");
-	tag.id = STYLE_TAG_ID;
-	tag.dataset.plugin = "dsh-theme-whalegirl";
-	tag.textContent = SKIN_CSS;
-	document.head.appendChild(tag);
+	if (tag === null) {
+		tag = document.createElement("style");
+		tag.id = STYLE_TAG_ID;
+		tag.dataset.plugin = "dsh-theme-whalegirl";
+		document.head.appendChild(tag);
+	}
+	tag.textContent = cssText;
 	return tag;
 }
 
@@ -459,7 +789,14 @@ function resolveTheme(ctx) {
 function apply(ctx) {
 	ctx.effect(() => {
 		document.body.setAttribute(BODY_ATTR, "");
-		const styleTag = injectStyle();
+
+		let prefs = loadPrefs();
+		const styleTag = injectStyle(buildSkinCss(prefs));
+		const applyPrefs = (next) => {
+			prefs = next;
+			injectStyle(buildSkinCss(next));
+		};
+		applyPrefsHook = applyPrefs;
 
 		const theme = resolveTheme(ctx);
 		const disposeRegister = theme.register({
@@ -472,6 +809,8 @@ function apply(ctx) {
 		} catch (error) {
 			console.error("dsh-theme-whalegirl: setTheme failed", error);
 		}
+
+		registerAppearanceCard(ctx);
 
 		// Guard: the built-in Appearance scope re-applies its stored preference —
 		// explicit light/dark or the "system" default — on settings reloads, and
@@ -493,6 +832,7 @@ function apply(ctx) {
 				: null;
 
 		return () => {
+			if (applyPrefsHook === applyPrefs) applyPrefsHook = null;
 			if (offChange !== null) offChange();
 			disposeRegister();
 			styleTag.remove();
